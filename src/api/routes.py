@@ -1,80 +1,58 @@
-from flask import Flask, request, jsonify, url_for, Blueprint
+from flask import request, jsonify, Blueprint
 from api.models import db, User
-from api.utils import generate_sitemap, APIException
-from flask_cors import CORS
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import (
+    create_access_token, jwt_required, get_jwt_identity
+)
 
 api = Blueprint('api', __name__)
 
-# Allow CORS requests to this API
-CORS(api)
-
-@api.route('/hello', methods=['POST', 'GET'])
-def handle_hello():
-
-    response_body = {
-        "message": "Hello! I'm a message that came from the backend, check the network tab on the google inspector and you will see the GET request"
-    }
-
-    return jsonify(response_body), 200
-
-# Ruta para registrarse = crear un usuario nuevo
+# ----------- SIGNUP -----------
 @api.route('/signup', methods=['POST'])
-def create_user():
-    body = request.get_json()
+def signup():
+    data = request.get_json()
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password")
 
-    if not body or not body.get('email') or not body.get('password') or not body.get('username'):
-        return jsonify({"msg": "Email, password and username are required"}), 400
+    if not email or not password:
+        return jsonify({"msg": "email y password son requeridos"}), 400
 
-    
-    existing_user = User.query.filter_by(email = body.get('email')).first()
-    if existing_user:
-        return jsonify({"msg": "User already exists"}), 403
+    if User.query.filter_by(email=email).first():
+        return jsonify({"msg": "email ya existe"}), 409
 
-    try:
-        new_user = User(
-            email=body["email"],
-            password=body["password"],
-            username = body["username"] 
-        )
+    user = User(email=email)
+    user.set_password(password)       # asegúrate que User tiene este método
+    db.session.add(user)
+    db.session.commit()
 
-        db.session.add(new_user)
-        db.session.commit()
+    return jsonify({"msg": "usuario creado"}), 201
 
-        return jsonify({"message": "User created succesfully"}), 201
-
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": str(e)}), 500
-
-# Ruta para logearse y creación de token
+# ----------- LOGIN -----------
 @api.route('/login', methods=['POST'])
 def login():
-    body = request.get_json()
+    data = request.get_json()
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password")
 
-    if not body or not body.get("email") or not body.get("password"):
-        return jsonify({"error": "Email and password are required"})
-    
-    user = User.query.filter_by(email=body.get("email")).first()
+    user = User.query.filter_by(email=email).first()
+    if not user or not user.check_password(password):
+        return jsonify({"msg": "credenciales inválidas"}), 401
 
-    if not user or not user.check_password(body.get("password")):
-        return jsonify({"error":"Incorrect credentials"})
-    
+    token = create_access_token(identity=user.id)
+    return jsonify({"access_token": token, "user": user.serialize()}), 200
 
-    access_token = create_access_token(identity=str(user.id))
-
-    return jsonify({
-        "access_token": access_token,  
-        "user": user.serialize()       
-    }), 200
-    
-
+# ----------- PRIVATE -----------
 @api.route('/private', methods=['GET'])
-@jwt_required() # Precisa de token para acceder
-def get_user_info():
-    current_user_id = get_jwt_identity() # Devuelve el ID porque se lo he pasado al crear access_token
-    user = User.query.get(current_user_id)
+@jwt_required()
+def private():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    return jsonify({"msg": f"Hola {user.email}", "user": user.serialize()}), 200
 
-    return jsonify({
-        "name": user.serialize()["username"]
-    }), 200
+# ----------- VERIFY -----------
+@api.route('/verify', methods=['GET'])
+@jwt_required(optional=True)
+def verify():
+    user_id = get_jwt_identity()
+    if not user_id:
+        return jsonify({"valid": False}), 401
+    return jsonify({"valid": True, "user_id": user_id}), 200
